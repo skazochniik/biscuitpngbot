@@ -1,4 +1,7 @@
 import io
+import os
+import threading
+from flask import Flask
 from PIL import Image
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -10,10 +13,22 @@ from telegram.ext import (
     filters,
 )
 
-BOT_TOKEN = "8778458203:AAEH8n7IY7Og1QaAHM1FuaOV7hEX88XUINo"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
 
 # Временное хранение файлов пользователей
 user_images: dict[int, bytes] = {}
+
+# веб сервер для Render
+web_app = Flask(__name__)
+
+@web_app.route("/")
+def home():
+    return "bot is alive"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -170,9 +185,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 def main() -> None:
-    if BOT_TOKEN == "ВСТАВЬ_СЮДА_СВОЙ_ТОКЕН":
-        raise ValueError("Вставь свой токен в BOT_TOKEN")
+    if not BOT_TOKEN:
+        raise ValueError("BOT_TOKEN not found")
 
+    threading.Thread(target=run_web).start()
+    
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
