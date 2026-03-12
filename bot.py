@@ -84,7 +84,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"бисквиты готовы к выпеканию\n"
             f"исходный размер: {original_kb:.1f} KB\n\n"
             f".・。.・゜✭・.・✫・゜・。\n"
-            f"выбери размер:",
+            f"выбери размер уменьшения:",
             reply_markup=reply_markup,
         )
 
@@ -220,3 +220,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
