@@ -1,3 +1,5 @@
+import tempfile
+import shutil
 import io
 import os
 import threading
@@ -17,7 +19,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 
 # Временное хранение файлов пользователей
-user_images: dict[int, bytes] = {}
+user_images: dict[int, str] = {}
 
 # веб сервер для Render
 web_app = Flask(__name__)
@@ -49,42 +51,56 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await message.reply_text("пришли именно PNG файл.")
         return
 
-    tg_file = await document.get_file()
-    data = await tg_file.download_as_bytearray()
+    if document.file_size and document.file_size > 50 * 1024 * 1024:
+        await message.reply_text("слишком огромный бисквит 🍪 максимум 50 MB")
+        return
 
     user_id = update.effective_user.id
-    user_images[user_id] = bytes(data)
 
-    original_kb = len(data) / 1024
+    temp_dir = tempfile.mkdtemp(prefix=f"pngbot_{user_id}_")
+    input_path = os.path.join(temp_dir, "input.png")
 
-    keyboard = [
-        [
-            InlineKeyboardButton("100 KB", callback_data="size_100"),
-            InlineKeyboardButton("300 KB", callback_data="size_300"),
-        ],
-        [
-            InlineKeyboardButton("500 KB", callback_data="size_500"),
-            InlineKeyboardButton("1 MB", callback_data="size_1000"),
-        ],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    try:
+        tg_file = await document.get_file()
+        await tg_file.download_to_drive(custom_path=input_path)
 
-    await message.reply_text(
-        f"бисквиты готовы к выпеканию\nисходный размер: {original_kb:.1f} KB\n\n.・。.・゜✭・.・✫・゜・。\nвыбери размер:",
-        reply_markup=reply_markup,
-    )
+        user_images[user_id] = input_path
+
+        original_kb = os.path.getsize(input_path) / 1024
+
+        keyboard = [
+            [
+                InlineKeyboardButton("100 KB", callback_data="size_100"),
+                InlineKeyboardButton("300 KB", callback_data="size_300"),
+            ],
+            [
+                InlineKeyboardButton("500 KB", callback_data="size_500"),
+                InlineKeyboardButton("1 MB", callback_data="size_1000"),
+            ],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await message.reply_text(
+            f"бисквиты готовы к выпеканию\n"
+            f"исходный размер: {original_kb:.1f} KB\n\n"
+            f".・。.・゜✭・.・✫・゜・。\n"
+            f"выбери размер:",
+            reply_markup=reply_markup,
+        )
+
+    except Exception:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
 
 
-def compress_to_target(data: bytes, target_kb: int) -> bytes:
-    """
-    Пытается ужать бисквитов примерно до target_kb.
-    Сначала пробует optimize, потом уменьшает размеры,
-    потом уменьшает количество начинки.
-    """
-    with Image.open(io.BytesIO(data)) as original:
+def compress_to_target(input_path: str, target_kb: int) -> bytes:
+    with Image.open(input_path) as original:
+        if original.width * original.height > 40_000_000:
+            return b""
+
         original = original.convert("RGBA")
+        
 
-        # Несколько уровней уменьшения
         scales = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2]
         color_options = [256, 128, 64, 32, 16]
 
@@ -97,7 +113,6 @@ def compress_to_target(data: bytes, target_kb: int) -> bytes:
 
             resized = original.resize((new_width, new_height), Image.LANCZOS)
 
-            # Вариант 1: обычный PNG
             output = io.BytesIO()
             resized.save(output, format="PNG", optimize=True)
             result = output.getvalue()
@@ -111,7 +126,6 @@ def compress_to_target(data: bytes, target_kb: int) -> bytes:
             if size_kb <= target_kb:
                 return result
 
-            # Вариант 2: палитровые PNG
             for colors in color_options:
                 paletted = resized.convert("P", palette=Image.Palette.ADAPTIVE, colors=colors)
 
@@ -128,7 +142,7 @@ def compress_to_target(data: bytes, target_kb: int) -> bytes:
                 if size_kb <= target_kb:
                     return result
 
-        return best_result if best_result is not None else data
+        return best_result if best_result is not None else b""
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -136,12 +150,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not query:
         return
 
+    if not query.message:
+        return
+
     await query.answer()
 
     user_id = query.from_user.id
-    data = user_images.get(user_id)
+    input_path = user_images.get(user_id)
 
-    if not data:
+    if not input_path or not os.path.exists(input_path):
         await query.message.reply_text("Сначала отправь PNG файл.")
         return
 
@@ -157,26 +174,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.message.reply_text("Неизвестный размер.")
         return
 
-    await query.message.reply_text("присую бисквиты..")
+    try:
+        await query.message.reply_text("присую бисквиты..")
 
-    result_bytes = compress_to_target(data, target_kb)
+        result_bytes = compress_to_target(input_path, target_kb)
 
-    original_kb = len(data) / 1024
-    result_kb = len(result_bytes) / 1024
-    saved_percent = 0.0
+        if not result_bytes:
+            await query.message.reply_text("не получилось спрессовать бисквит :(")
+            return
 
-    if len(data) > 0:
-        saved_percent = (1 - len(result_bytes) / len(data)) * 100
+        await query.message.reply_document(
+            document=io.BytesIO(result_bytes),
+            filename=f"compressed_{target_kb}kb.png",
+            caption="вы спресовали бедных бисквитов",
+        )
 
-    target_label = "1 MB" if target_kb == 1000 else f"{target_kb} KB"
+    finally:
+        temp_dir = os.path.dirname(input_path)
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        user_images.pop(user_id, None)
 
-    await query.message.reply_document(
-        document=io.BytesIO(result_bytes),
-        filename=f"compressed_{target_kb}kb.png",
-        caption="вы спресовали бедных бисквитов",
-    )
-
-    user_images.pop(user_id, None)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -188,7 +205,7 @@ def main() -> None:
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN not found")
 
-    threading.Thread(target=run_web).start()
+    threading.Thread(target=run_web, daemon=True).start()
     
     app = Application.builder().token(BOT_TOKEN).build()
 
